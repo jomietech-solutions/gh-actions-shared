@@ -6,6 +6,14 @@ This repo is intentionally **public** so that private repos in the org can call 
 
 ## Workflows
 
+### `build-runner-images.yml`
+
+Builds the custom jomietech runner Docker images (`jomietech-runner-node`, `jomietech-runner-maven`, `jomietech-runner-android`) and pushes them to ECR. These images bake in a non-root `runner` user at uid=1000 with HOME=/home/runner and pre-configured tool dirs/PATH so consumer workflows on the self-hosted fleet can run `--user 1000:1000` without per-step env-var patches.
+
+See [`runner-images/README.md`](./runner-images/README.md) for the full design, image guarantees, and consume guide.
+
+Triggers on push to `main` (when `runner-images/**` changes) or manually via `workflow_dispatch`.
+
 ### `bootstrap-runner.yml`
 
 Ensures at least one self-hosted runner from the jomietech ASG is online before downstream jobs run. Queue-depth-aware: bursts the ASG when org-wide queued runs exceed a configurable per-runner ratio.

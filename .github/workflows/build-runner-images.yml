@@ -1,0 +1,193 @@
+name: Build runner images
+
+# Builds and pushes the custom jomietech runner images to ECR.
+#
+# Each image wraps an upstream language tool image with a non-root
+# `runner` user (uid=1000) and pre-configured tool cache dirs/HOME so
+# consumer workflows on the self-hosted jomietech runner fleet can run
+# `--user 1000:1000` cleanly without per-workflow env-var patches.
+#
+# See runner-images/README.md for the full rationale and consume guide.
+#
+# Triggers:
+#   - workflow_dispatch  (manual)
+#   - push on main       (only when runner-images/** changed)
+#
+# Runtime:
+#   - bootstrap-runner job ensures a self-hosted runner is online
+#   - three parallel build jobs (node, maven, android), each on
+#     [self-hosted, jomietech], using the runner's instance role for
+#     ECR auth — no extra IAM/secrets needed
+#   - target ECR repos are auto-created on first push (runner role
+#     already has ecr:CreateRepository)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'runner-images/**'
+      - '.github/workflows/build-runner-images.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-1
+  ECR_REGISTRY: 171518635415.dkr.ecr.ap-southeast-1.amazonaws.com
+
+jobs:
+  bootstrap-runner:
+    uses: ./.github/workflows/bootstrap-runner.yml
+    secrets:
+      runner_api_token: ${{ secrets.RUNNER_API_TOKEN }}
+
+  build-node:
+    name: Build jomietech-runner-node
+    needs: bootstrap-runner
+    runs-on: [self-hosted, jomietech]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (runner instance role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          # Self-hosted runner uses its EC2 instance role; no key/secret
+          # needed and no role-to-assume — just region.
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR repository exists
+        # First-push idempotency: the runner role has ecr:CreateRepository,
+        # so we create the repo if it doesn't already exist. Subsequent
+        # runs short-circuit on the existing repo.
+        run: |
+          set -euo pipefail
+          aws ecr describe-repositories \
+            --repository-names jomietech-runner-node \
+            --region "${AWS_REGION}" >/dev/null 2>&1 \
+          || aws ecr create-repository \
+              --repository-name jomietech-runner-node \
+              --region "${AWS_REGION}" \
+              --image-tag-mutability MUTABLE \
+              --image-scanning-configuration scanOnPush=true
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(echo ${GITHUB_SHA} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./runner-images/node
+          file: ./runner-images/node/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.ECR_REGISTRY }}/jomietech-runner-node:latest
+            ${{ env.ECR_REGISTRY }}/jomietech-runner-node:${{ steps.sha.outputs.short }}
+          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/jomietech-runner-node:buildcache
+          cache-to: type=registry,ref=${{ env.ECR_REGISTRY }}/jomietech-runner-node:buildcache,mode=max
+
+  build-maven:
+    name: Build jomietech-runner-maven
+    needs: bootstrap-runner
+    runs-on: [self-hosted, jomietech]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (runner instance role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR repository exists
+        run: |
+          set -euo pipefail
+          aws ecr describe-repositories \
+            --repository-names jomietech-runner-maven \
+            --region "${AWS_REGION}" >/dev/null 2>&1 \
+          || aws ecr create-repository \
+              --repository-name jomietech-runner-maven \
+              --region "${AWS_REGION}" \
+              --image-tag-mutability MUTABLE \
+              --image-scanning-configuration scanOnPush=true
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(echo ${GITHUB_SHA} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./runner-images/maven
+          file: ./runner-images/maven/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.ECR_REGISTRY }}/jomietech-runner-maven:latest
+            ${{ env.ECR_REGISTRY }}/jomietech-runner-maven:${{ steps.sha.outputs.short }}
+          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/jomietech-runner-maven:buildcache
+          cache-to: type=registry,ref=${{ env.ECR_REGISTRY }}/jomietech-runner-maven:buildcache,mode=max
+
+  build-android:
+    name: Build jomietech-runner-android
+    needs: bootstrap-runner
+    runs-on: [self-hosted, jomietech]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (runner instance role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR repository exists
+        run: |
+          set -euo pipefail
+          aws ecr describe-repositories \
+            --repository-names jomietech-runner-android \
+            --region "${AWS_REGION}" >/dev/null 2>&1 \
+          || aws ecr create-repository \
+              --repository-name jomietech-runner-android \
+              --region "${AWS_REGION}" \
+              --image-tag-mutability MUTABLE \
+              --image-scanning-configuration scanOnPush=true
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(echo ${GITHUB_SHA} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./runner-images/android
+          file: ./runner-images/android/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.ECR_REGISTRY }}/jomietech-runner-android:latest
+            ${{ env.ECR_REGISTRY }}/jomietech-runner-android:${{ steps.sha.outputs.short }}
+          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/jomietech-runner-android:buildcache
+          cache-to: type=registry,ref=${{ env.ECR_REGISTRY }}/jomietech-runner-android:buildcache,mode=max
