@@ -1,0 +1,182 @@
+name: Bootstrap Self-Hosted Runner
+
+# Reusable workflow that ensures at least one self-hosted runner is online
+# in the configured AWS Auto Scaling Group before downstream jobs run.
+#
+# Decision matrix (queue-depth-aware):
+#   1. No InService/Pending runner       -> ASG desired += 1
+#   2. Runners exist AND queued/online>threshold -> ASG desired += 1 (burst)
+#   3. Otherwise                          -> no scale, just wait for current
+# Always capped at ASG MaxSize — never exceeds.
+#
+# Threshold autoscaling (case 2) requires the consuming workflow to pass a
+# `runner_api_token` secret with `read:org` + `actions:read` scopes.
+# Without it the script silently falls back to case-1-only behavior.
+#
+# Example consumer:
+#   jobs:
+#     bootstrap-runner:
+#       uses: jomietech-solutions/gh-actions-shared/.github/workflows/bootstrap-runner.yml@main
+#       secrets:
+#         runner_api_token: ${{ secrets.RUNNER_API_TOKEN }}
+#     build:
+#       needs: bootstrap-runner
+#       runs-on: [self-hosted, jomietech]
+#       steps: ...
+
+on:
+  workflow_call:
+    inputs:
+      asg_name:
+        description: 'AWS Auto Scaling Group name backing the self-hosted runner fleet'
+        required: false
+        type: string
+        default: jomietech-fleet-asg
+      runner_label:
+        description: 'GitHub runner label that consuming jobs target (used to filter org runners when computing queue depth)'
+        required: false
+        type: string
+        default: jomietech
+      aws_role:
+        description: 'IAM role ARN for OIDC AWS auth (must allow autoscaling:Describe* + SetDesiredCapacity on the ASG)'
+        required: false
+        type: string
+        default: arn:aws:iam::171518635415:role/github-actions-bootstrap
+      aws_region:
+        description: 'AWS region the ASG lives in'
+        required: false
+        type: string
+        default: ap-southeast-1
+      threshold:
+        description: 'Queue/runner ratio above which to scale up by 1 (capped at ASG MaxSize)'
+        required: false
+        type: number
+        default: 3
+      org:
+        description: 'GitHub organization slug (used to query queued runs + online runners via API)'
+        required: false
+        type: string
+        default: jomietech-solutions
+      register_wait_seconds:
+        description: 'Seconds to sleep after first InService instance, to give actions-runner time to register'
+        required: false
+        type: number
+        default: 180
+    secrets:
+      runner_api_token:
+        description: 'GitHub PAT with read:org + actions:read scopes for org-wide queue/runner inspection. If absent, threshold autoscaling is disabled and the workflow falls back to case-1-only behavior.'
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  bootstrap:
+    name: Ensure self-hosted runner online
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Ensure ASG instance is running (queue-depth aware)
+        env:
+          RUNNER_API_TOKEN: ${{ secrets.runner_api_token }}
+          ASG_NAME: ${{ inputs.asg_name }}
+          ORG: ${{ inputs.org }}
+          THRESHOLD: ${{ inputs.threshold }}
+          RUNNER_LABEL: ${{ inputs.runner_label }}
+          REGISTER_WAIT: ${{ inputs.register_wait_seconds }}
+        run: |
+          set -euo pipefail
+
+          # --- Read current ASG state ---
+          ASG_INFO=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --query 'AutoScalingGroups[0]')
+          DESIRED=$(echo "$ASG_INFO" | jq '.DesiredCapacity')
+          MAX=$(echo "$ASG_INFO" | jq '.MaxSize')
+          INSERVICE=$(echo "$ASG_INFO" \
+            | jq '[.Instances[] | select(.LifecycleState=="InService" or .LifecycleState=="Pending")] | length')
+          echo "ASG state: desired=$DESIRED max=$MAX inservice/pending=$INSERVICE"
+
+          # --- Count online runners with the configured label (org-wide) ---
+          # Fallback: ASG InService count is a reasonable proxy when no PAT.
+          ONLINE_RUNNERS=$INSERVICE
+          QUEUED_JOBS=0
+          if [ -n "${RUNNER_API_TOKEN:-}" ]; then
+            ONLINE_RUNNERS=$(curl -sH "Authorization: token $RUNNER_API_TOKEN" \
+              "https://api.github.com/orgs/$ORG/actions/runners?per_page=100" \
+              | jq --arg L "$RUNNER_LABEL" '[.runners[]? | select(.status=="online") | select(.labels[]?.name==$L)] | length' \
+              2>/dev/null || echo "$INSERVICE")
+            # Sum queued workflow runs across the org. Some queued runs may
+            # target ubuntu-latest (not the self-hosted label) — accepted as
+            # a slight over-count; the > THRESHOLD threshold makes this safe.
+            QUEUED_JOBS=$(curl -sH "Authorization: token $RUNNER_API_TOKEN" \
+              "https://api.github.com/orgs/$ORG/actions/runs?status=queued&per_page=100" \
+              | jq '.total_count // 0' \
+              2>/dev/null || echo 0)
+            echo "GitHub API: online_runners=$ONLINE_RUNNERS queued_jobs=$QUEUED_JOBS"
+          else
+            echo "RUNNER_API_TOKEN not set — threshold autoscaling disabled, using ASG-only fallback."
+          fi
+
+          # --- Decide ---
+          WANT_DESIRED=$DESIRED
+          if [ "$INSERVICE" -eq 0 ]; then
+            WANT_DESIRED=$((DESIRED + 1))
+            echo "Case 1: no runner instance; bumping desired $DESIRED -> $WANT_DESIRED."
+          elif [ "$ONLINE_RUNNERS" -gt 0 ] && [ "$QUEUED_JOBS" -gt 0 ]; then
+            RATIO=$((QUEUED_JOBS / ONLINE_RUNNERS))
+            echo "Queue ratio: queued=$QUEUED_JOBS online=$ONLINE_RUNNERS ratio=$RATIO (threshold=$THRESHOLD)"
+            if [ "$RATIO" -gt "$THRESHOLD" ]; then
+              WANT_DESIRED=$((DESIRED + 1))
+              echo "Case 2: ratio > $THRESHOLD; bumping desired $DESIRED -> $WANT_DESIRED."
+            else
+              echo "Case 3: ratio within threshold; holding desired at $DESIRED."
+            fi
+          else
+            echo "Case 3: no scale needed; holding desired at $DESIRED."
+          fi
+
+          # --- Cap at MaxSize ---
+          if [ "$WANT_DESIRED" -gt "$MAX" ]; then
+            echo "Capping at MaxSize=$MAX (would have set $WANT_DESIRED)."
+            WANT_DESIRED=$MAX
+          fi
+
+          # --- Apply if changed ---
+          if [ "$WANT_DESIRED" -ne "$DESIRED" ]; then
+            echo "Applying set-desired-capacity $DESIRED -> $WANT_DESIRED."
+            aws autoscaling set-desired-capacity \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --desired-capacity "$WANT_DESIRED"
+          else
+            echo "No ASG change required."
+          fi
+
+          # --- Wait for at least one InService instance ---
+          echo "Waiting up to 10 min for an instance to reach InService and runner.service to start..."
+          for i in $(seq 1 60); do
+            INSERVICE_NOW=$(aws autoscaling describe-auto-scaling-groups \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`] | length(@)' \
+              --output text 2>/dev/null || echo 0)
+            if [ "$INSERVICE_NOW" -ge 1 ]; then
+              echo "At least one instance is InService."
+              # Give the runner ~3 more minutes (configurable via
+              # register_wait_seconds) to install + register so the build
+              # job lands on the self-hosted runner instead of queuing
+              # forever. The actual job-pickup happens on the runner side.
+              sleep "$REGISTER_WAIT"
+              echo "Bootstrap done — handing off to build job."
+              exit 0
+            fi
+            echo "  [$i/60] inservice=$INSERVICE_NOW, sleeping 10s..."
+            sleep 10
+          done
+          echo "Timed out waiting for ASG instance to reach InService."
+          exit 1
