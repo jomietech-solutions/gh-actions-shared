@@ -37,8 +37,8 @@ ARG YARN_VERSION=1.22.22
 # it first to free up the uid for `runner`. usermod can't be used because
 # we want the literal name `runner` and the literal HOME path /home/runner.
 RUN set -eux; \
-    if getent passwd node >/dev/null 2>&1; then userdel -r node 2>/dev/null || true; fi; \
-    if getent group node >/dev/null 2>&1; then groupdel node 2>/dev/null || true; fi; \
+    if existing_user=$(getent passwd 1000 | cut -d: -f1) && [ -n "$existing_user" ]; then userdel -r "$existing_user" 2>/dev/null || true; fi; \
+    if existing_group=$(getent group 1000 | cut -d: -f1) && [ -n "$existing_group" ]; then groupdel "$existing_group" 2>/dev/null || true; fi; \
     groupadd --gid 1000 runner; \
     useradd --uid 1000 --gid 1000 --create-home --home-dir /home/runner --shell /bin/bash runner; \
     install -d -m 0755 -o runner -g runner \
