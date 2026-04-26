@@ -4,10 +4,13 @@ name: Bootstrap Self-Hosted Runner
 # in the configured AWS Auto Scaling Group before downstream jobs run.
 #
 # Decision matrix (queue-depth-aware):
-#   1. No InService/Pending runner       -> ASG desired += 1
-#   2. Runners exist AND queued/online>threshold -> ASG desired += 1 (burst)
-#   3. Otherwise                          -> no scale, just wait for current
+#   1. No InService/Pending runner       -> ASG desired += 1, then wait for register (cold-start)
+#   2. Runners exist AND queued/online>threshold -> ASG desired += 1 (burst), but DON'T wait — job queues normally
+#   3. Otherwise                          -> no scale, no wait — job queues normally on existing runner
 # Always capped at ASG MaxSize — never exceeds.
+#
+# The wait-for-register step ONLY runs in case 1 (true cold-start, no online runner).
+# Cases 2 and 3 exit immediately, saving ~3 min per job when a runner is already online.
 #
 # Threshold autoscaling (case 2) requires the consuming workflow to pass a
 # `runner_api_token` secret with `read:org` + `actions:read` scopes.
@@ -158,8 +161,19 @@ jobs:
             echo "No ASG change required."
           fi
 
-          # --- Wait for at least one InService instance ---
-          echo "Waiting up to 10 min for an instance to reach InService and runner.service to start..."
+          # --- Wait only when this is a true cold-start (0 -> 1) ---
+          # If at least one runner is already online, the queued job will be
+          # picked up the moment that runner frees up (or immediately if idle).
+          # Waiting here would just add 3+ minutes of dead time per job.
+          # Only the cold-start path needs the wait, because there's no runner
+          # to pick the job up at all until the new instance registers.
+          if [ "$ONLINE_RUNNERS" -gt 0 ]; then
+            echo "An online runner already exists ($ONLINE_RUNNERS); skipping the InService+register wait."
+            echo "The build job will queue on GitHub and be picked up by an existing or newly-spawned runner."
+            exit 0
+          fi
+
+          echo "Cold-start path: no online runner. Waiting up to 10 min for an instance to reach InService and runner.service to start..."
           for i in $(seq 1 60); do
             INSERVICE_NOW=$(aws autoscaling describe-auto-scaling-groups \
               --auto-scaling-group-name "$ASG_NAME" \
