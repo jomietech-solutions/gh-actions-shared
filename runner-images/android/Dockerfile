@@ -27,6 +27,14 @@
 
 FROM 171518635415.dkr.ecr.ap-southeast-1.amazonaws.com/dockerhub/reactnativecommunity/react-native-android:v20.1
 
+# CI tooling baked into the image. `jq` is required by ECS deploy
+# workflows (task-definition env/secrets stripping); `curl` is used by
+# health-check and webhook steps. Installed up front so consumer
+# workflows don't have to apt-get at job time.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends jq curl && \
+    rm -rf /var/lib/apt/lists/*
+
 # Pinned yarn classic version (matches forgeerp-mobile's package manager).
 ARG YARN_VERSION=1.22.22
 
