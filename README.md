@@ -1,30 +1,49 @@
 # gh-actions-shared
 
-Shared GitHub Actions reusable workflows for the `jomietech-solutions` org.
+> Shared, reusable GitHub Actions workflows for the `jomietech-solutions` org.
 
-This repo is intentionally **public** so that private repos in the org can call the workflows as `uses:` references. (GitHub's free plan does not allow sharing private reusable workflows across private repos.) The repo holds reusable workflow YAML only — no source code, no infrastructure, no secrets.
+This repo holds the workflow YAML and runner-image Dockerfiles that other org repos call via `uses:`. It is intentionally **public** so private repos in the org can reference its workflows — GitHub's free plan does not allow sharing reusable workflows across private repos. No application source, no infrastructure, no secrets live here.
 
-## Workflows
+## Contents
 
-### `build-runner-images.yml`
+### Reusable workflows (`.github/workflows/*.yml`)
 
-Builds the custom jomietech runner Docker images (`jomietech-runner-node`, `jomietech-runner-maven`, `jomietech-runner-android`) and pushes them to ECR. These images bake in a non-root `runner` user at uid=1000 with HOME=/home/runner and pre-configured tool dirs/PATH so consumer workflows on the self-hosted fleet can run `--user 1000:1000` without per-step env-var patches.
+| Workflow | Purpose | Trigger |
+|---|---|---|
+| [`bootstrap-runner.yml`](./.github/workflows/bootstrap-runner.yml) | Ensures at least one self-hosted runner from the jomietech ASG is online (and bursts capacity when org-wide queue depth exceeds a per-runner threshold) before downstream jobs run. Capped at the ASG `MaxSize`. | `workflow_call` |
+| [`build-runner-images.yml`](./.github/workflows/build-runner-images.yml) | Builds and pushes the three custom runner images (`jomietech-runner-node`, `jomietech-runner-maven`, `jomietech-runner-android`) to ECR. Uses `bootstrap-runner.yml` itself, then runs three parallel build jobs on `[self-hosted, jomietech]`, authenticating to ECR via the runner instance role. | `workflow_dispatch` + `push` to `main` when `runner-images/**` or the workflow itself changes |
 
-See [`runner-images/README.md`](./runner-images/README.md) for the full design, image guarantees, and consume guide.
+### Runner images (`runner-images/`)
 
-Triggers on push to `main` (when `runner-images/**` changes) or manually via `workflow_dispatch`.
+Dockerfiles wrapped around upstream language tool images, baking a non-root `runner` user (uid=1000) with `HOME=/home/runner` and pre-configured tool cache dirs/PATH so consumer workflows can run `--user 1000:1000` without per-step env-var patches.
 
-### `bootstrap-runner.yml`
+- `runner-images/node/` — Node.js builds (Next.js, Vite, Yarn, npm, EAS CLI)
+- `runner-images/maven/` — Maven + Java builds (Spring Boot services)
+- `runner-images/android/` — Android SDK + Gradle (mobile EAS builds)
 
-Ensures at least one self-hosted runner from the jomietech ASG is online before downstream jobs run. Queue-depth-aware: bursts the ASG when org-wide queued runs exceed a configurable per-runner ratio.
+See [`runner-images/README.md`](./runner-images/README.md) for image guarantees and the consume guide.
 
-#### Decision matrix
+## Usage
 
-1. No InService/Pending runner -> ASG `desired += 1`
-2. Runners exist AND `queued/online > threshold` -> ASG `desired += 1` (burst)
-3. Otherwise -> no scale, just wait for current
+Reference workflows from a calling repo via `uses: jomietech-solutions/gh-actions-shared/.github/workflows/<name>.yml@<ref>`.
 
-Always capped at the ASG `MaxSize`.
+### `bootstrap-runner.yml` — example consumer
+
+```yaml
+jobs:
+  bootstrap-runner:
+    uses: jomietech-solutions/gh-actions-shared/.github/workflows/bootstrap-runner.yml@main
+    secrets:
+      runner_api_token: ${{ secrets.RUNNER_API_TOKEN }}
+
+  build:
+    needs: bootstrap-runner
+    runs-on: [self-hosted, jomietech]
+    container: 171518635415.dkr.ecr.ap-southeast-1.amazonaws.com/jomietech-runner-node:latest
+    steps:
+      - uses: actions/checkout@v5
+      # ...
+```
 
 #### Inputs (all optional, sensible jomietech defaults)
 
@@ -44,33 +63,18 @@ Always capped at the ASG `MaxSize`.
 |---|---|---|
 | `runner_api_token` | optional | GitHub PAT with `read:org` + `actions:read`. Without it, threshold autoscaling is disabled and only case 1 (no runner -> +1) fires. |
 
-#### Example consumer (5 lines)
-
-```yaml
-jobs:
-  bootstrap-runner:
-    uses: jomietech-solutions/gh-actions-shared/.github/workflows/bootstrap-runner.yml@main
-    secrets:
-      runner_api_token: ${{ secrets.RUNNER_API_TOKEN }}
-
-  build:
-    needs: bootstrap-runner
-    runs-on: [self-hosted, jomietech]
-    steps:
-      - uses: actions/checkout@v5
-      # ...
-```
-
-> Note: secrets do **not** auto-inherit across reusable-workflow boundaries. Pass `runner_api_token` explicitly as shown, OR (if `RUNNER_API_TOKEN` becomes an org-level secret on a paid plan) use `secrets: inherit`.
+> Reusable-workflow secrets do **not** auto-inherit. Pass `runner_api_token` explicitly as shown, OR use `secrets: inherit` once `RUNNER_API_TOKEN` is an org-level secret on a paid plan.
 
 #### Required AWS permissions on the OIDC role
-
-The role must allow:
 
 - `autoscaling:DescribeAutoScalingGroups`
 - `autoscaling:SetDesiredCapacity` (scoped to the target ASG)
 
-#### Pinning
+### `build-runner-images.yml`
+
+Triggered on push to `main` under `runner-images/**` or via the Actions tab (`workflow_dispatch`). No consumer-side wiring — the workflow lives and runs in this repo.
+
+### Pinning
 
 For reproducibility, pin to a tag or commit SHA in production workflows:
 
@@ -78,7 +82,23 @@ For reproducibility, pin to a tag or commit SHA in production workflows:
 uses: jomietech-solutions/gh-actions-shared/.github/workflows/bootstrap-runner.yml@v1
 ```
 
-`@main` follows the latest changes — fine for internal use, riskier for external consumers.
+`@main` follows latest changes — fine for internal use, riskier for downstream pinning.
+
+## Conventions
+
+- **Self-hosted jomietech runners only.** All consumer jobs target `runs-on: [self-hosted, jomietech]`. Do not use `ubuntu-latest` for org workloads — the only `ubuntu-latest` job in this repo is the bootstrap step itself, which has to run *before* a self-hosted runner exists. (See memory `feedback_runner_jomietech.md`.)
+- **No installs on the runner host.** Consumer workflows must use the `container:` directive with one of the prebuilt images (`jomietech-runner-node` / `-maven` / `-android` from `171518635415.dkr.ecr.ap-southeast-1.amazonaws.com`). Never `apt-get install` / `npm install -g` / `pip install` directly on the runner host — it pollutes the shared fleet and breaks subsequent jobs. (See memory `feedback_no_runner_host_install.md`.)
+- **OIDC, not long-lived keys.** Consumers needing AWS auth should use `aws-actions/configure-aws-credentials@v4` with `role-to-assume`. The build jobs in this repo skip `role-to-assume` because they run on self-hosted runners that already have an EC2 instance role with ECR push.
+- **`@main` is the moving ref.** Internal callers may pin to `@main`; external/critical pipelines should pin to a tag or commit SHA.
+- **No long-running pre-push hooks** in consumer repos — SSH connections die during 7–8 min hooks and the push silently fails. (See memory `feedback_no_long_prepush_hooks.md`.)
+
+## Related
+
+Repos in the `jomietech-solutions` org that consume these workflows:
+
+- [`forgeerp-api-tests`](https://github.com/jomietech-solutions/forgeerp-api-tests) — API regression + smoke suites; both `api-regression.yml` and `api-smoke.yml` call `bootstrap-runner.yml@main` before the test job.
+- [`terraform-jomietech-base`](https://github.com/jomietech-solutions/terraform-jomietech-base) — provisions the underlying runner ASG (`130-Github-Runner.tf`) and the ECR repos that hold the runner images built here.
+- ForgeERP product repos (`enterprise-resource-planning`, `enterprise-resource-planning-backend`, `backend-common`, `frontend-common`, `forgeerp-mobile`) — deploy via self-hosted runners; their workflows are expected to migrate to `bootstrap-runner.yml` as they're touched.
 
 ## License
 
