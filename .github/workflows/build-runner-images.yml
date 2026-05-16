@@ -51,6 +51,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # configure-aws-credentials@v4 — last verified 2026-05-17 (latest v4
+      # minor = v4.3.1). v5 + v6 exist upstream but not adopted here; held
+      # in lockstep with FLPC FE/BE deploy-dev. See bootstrap-runner.yml.
       - name: Configure AWS credentials (runner instance role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -58,6 +61,10 @@ jobs:
           # Self-hosted runner uses its EC2 instance role; no key/secret
           # needed and no role-to-assume — just region.
 
+      # amazon-ecr-login@v2 — last verified 2026-05-17 (latest v2 minor =
+      # v2.1.5, published 2026-05-06). No v3 GA yet; v2 stays on Node 20
+      # runtime which matches our self-hosted runner image. Next quarterly
+      # recheck: 2026-08-17.
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
@@ -104,11 +111,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # configure-aws-credentials@v4 — last verified 2026-05-17 (latest v4
+      # minor = v4.3.1). v5 + v6 exist upstream but not adopted here; held
+      # in lockstep with FLPC FE/BE deploy-dev. See bootstrap-runner.yml.
       - name: Configure AWS credentials (runner instance role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
 
+      # amazon-ecr-login@v2 — last verified 2026-05-17 (latest v2 minor =
+      # v2.1.5, published 2026-05-06). No v3 GA yet; v2 stays on Node 20
+      # runtime which matches our self-hosted runner image. Next quarterly
+      # recheck: 2026-08-17.
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
@@ -152,11 +166,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # configure-aws-credentials@v4 — last verified 2026-05-17 (latest v4
+      # minor = v4.3.1). v5 + v6 exist upstream but not adopted here; held
+      # in lockstep with FLPC FE/BE deploy-dev. See bootstrap-runner.yml.
       - name: Configure AWS credentials (runner instance role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
 
+      # amazon-ecr-login@v2 — last verified 2026-05-17 (latest v2 minor =
+      # v2.1.5, published 2026-05-06). No v3 GA yet; v2 stays on Node 20
+      # runtime which matches our self-hosted runner image. Next quarterly
+      # recheck: 2026-08-17.
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
