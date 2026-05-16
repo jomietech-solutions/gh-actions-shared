@@ -79,6 +79,12 @@ jobs:
     name: Ensure self-hosted runner online
     runs-on: ubuntu-latest
     steps:
+      # configure-aws-credentials@v4 — last verified 2026-05-17 against the
+      # FLPC FE/BE deploy-dev workflows (same major pin). Latest v4 minor
+      # is v4.3.1 (2025-08); v5 + v6 exist upstream but are NOT adopted here
+      # because the FLPC product workflows are still on v4. Bump in lockstep
+      # with FLPC FE/BE — never let this workflow advance the major ahead
+      # of consumers (it'd break their OIDC contract assumptions).
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
