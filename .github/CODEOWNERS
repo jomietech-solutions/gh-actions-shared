@@ -1,0 +1,10 @@
+# Code owners for this repository.
+#
+# Every path is owned by @jorgeamie, so any pull request touching this repo
+# requests his review automatically.
+#
+# NOTE: this file on its own does not block anything. Enforcement requires
+# branch protection on the default branch with "Require review from Code
+# Owners" enabled — without that, the review is requested but not required.
+
+* @jorgeamie
