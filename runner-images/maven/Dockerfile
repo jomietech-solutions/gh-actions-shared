@@ -62,6 +62,10 @@ RUN set -eux; \
     useradd --uid 1000 --gid 1000 --create-home --home-dir /home/runner --shell /bin/bash runner; \
     install -d -m 0755 -o runner -g runner /home/runner/.m2
 
+# Fail the image build if the JDK is not the patched one (FORGEERP-62), so a
+# digest bump to an unpatched base can never be pushed as :latest.
+RUN java -version 2>&1 | tee /dev/stderr | grep -q 'Temurin-25.0.5.1' && mvn -v
+
 # Make HOME and MAVEN_CONFIG correct for the runner user out of the box.
 # Consumer workflows can drop their `-e HOME=... -e MAVEN_CONFIG=...`
 # overrides; the image-level ENV here is authoritative.
