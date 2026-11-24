@@ -14,7 +14,7 @@ or PATH every time we add a new tool.
 | ECR repo | Base image | Used by |
 |---|---|---|
 | `jomietech-runner-node` | `dockerhub/library/node:20-bookworm` | yarn/npm/corepack — frontend builds + mobile lint-test/EAS submission |
-| `jomietech-runner-maven` | `dockerhub/library/maven:3.9-eclipse-temurin-25` | mvn — backend builds (auth, ERP) |
+| `jomietech-runner-maven` | `dockerhub/library/eclipse-temurin:25.0.5.1_2-jdk-noble` + Maven 3.9.16 from `dockerhub/library/maven:3.9.16-eclipse-temurin-25` (both by digest, FORGEERP-62) | mvn — backend builds (auth, ERP) |
 | `jomietech-runner-android` | `dockerhub/reactnativecommunity/react-native-android:v20.1` | gradle assembleDebug — mobile Android local APK |
 
 All three images:

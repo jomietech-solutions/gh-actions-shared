@@ -19,7 +19,27 @@
 #   - HOME=/home/runner, MAVEN_CONFIG=/home/runner/.m2 baked into image env
 #   - Default USER runner, default WORKDIR /home/runner
 
-FROM 171518635415.dkr.ecr.ap-southeast-1.amazonaws.com/dockerhub/library/maven:3.9-eclipse-temurin-25
+# Java4Shell (CVE-2026-114938, FORGEERP-62, 2026-11-22): the official
+# maven:3.9-eclipse-temurin-25 tag was last rebuilt 2026-09-26 and still ships
+# the vulnerable Temurin 25.0.4.1; only the Maven 3.10/4.0 tags moved to the
+# fixed 25.0.5.1. To keep Maven 3.9.16 exactly as before, this image now
+# rebuilds what the official one does (carlossg/docker-maven) on the fixed
+# JDK: Temurin 25.0.5.1+2 on Ubuntu noble, the same apt packages, Maven copied
+# from the official 3.9 image, its entrypoint and the mvn symlink.
+# Both are pinned by digest; bump them deliberately.
+FROM 171518635415.dkr.ecr.ap-southeast-1.amazonaws.com/dockerhub/library/maven:3.9-eclipse-temurin-25@sha256:93b8a14ea2f412782e4e842651273b4d903e35cc496284f178fbbe2d67d00976 AS maven39
+
+FROM 171518635415.dkr.ecr.ap-southeast-1.amazonaws.com/dockerhub/library/eclipse-temurin:25.0.5.1_2-jdk-noble@sha256:c7eef3dfeb81468533ea48c67bddaa8c7ca916454259e4d0d734d12bcff8e125
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl git openssh-client && \
+    rm -rf /var/lib/apt/lists/*
+ENV MAVEN_HOME=/usr/share/maven
+COPY --from=maven39 /usr/share/maven /usr/share/maven
+COPY --from=maven39 /usr/local/bin/mvn-entrypoint.sh /usr/local/bin/mvn-entrypoint.sh
+RUN ln -s ${MAVEN_HOME}/bin/mvn /usr/bin/mvn
+ENTRYPOINT ["/usr/local/bin/mvn-entrypoint.sh"]
+CMD ["mvn"]
 
 # CI tooling baked into the image. `jq` is required by ECS deploy
 # workflows (task-definition env/secrets stripping); `curl` is used by
@@ -41,6 +61,10 @@ RUN set -eux; \
     groupadd --gid 1000 runner; \
     useradd --uid 1000 --gid 1000 --create-home --home-dir /home/runner --shell /bin/bash runner; \
     install -d -m 0755 -o runner -g runner /home/runner/.m2
+
+# Fail the image build if the JDK is not the patched one (FORGEERP-62), so a
+# digest bump to an unpatched base can never be pushed as :latest.
+RUN java -version 2>&1 | tee /dev/stderr | grep -q 'Temurin-25.0.5.1' && mvn -v
 
 # Make HOME and MAVEN_CONFIG correct for the runner user out of the box.
 # Consumer workflows can drop their `-e HOME=... -e MAVEN_CONFIG=...`
