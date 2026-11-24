@@ -14,7 +14,6 @@ name: Build runner images
 #   - push on main       (only when runner-images/** changed)
 #
 # Runtime:
-#   - bootstrap-runner job ensures a self-hosted runner is online
 #   - three parallel build jobs (node, maven, android), each on
 #     [self-hosted, jomietech], using the runner's instance role for
 #     ECR auth — no extra IAM/secrets needed
@@ -38,14 +37,8 @@ env:
   ECR_REGISTRY: 171518635415.dkr.ecr.ap-southeast-1.amazonaws.com
 
 jobs:
-  bootstrap-runner:
-    uses: ./.github/workflows/bootstrap-runner.yml
-    secrets:
-      runner_api_token: ${{ secrets.RUNNER_API_TOKEN }}
-
   build-node:
     name: Build jomietech-runner-node
-    needs: bootstrap-runner
     runs-on: [self-hosted, jomietech]
     steps:
       - name: Checkout
@@ -53,7 +46,7 @@ jobs:
 
       # configure-aws-credentials@v4 — last verified 2026-05-17 (latest v4
       # minor = v4.3.1). v5 + v6 exist upstream but not adopted here; held
-      # in lockstep with FLPC FE/BE deploy-dev. See bootstrap-runner.yml.
+      # in lockstep with FLPC FE/BE deploy-dev.
       - name: Configure AWS credentials (runner instance role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -105,7 +98,6 @@ jobs:
 
   build-maven:
     name: Build jomietech-runner-maven
-    needs: bootstrap-runner
     runs-on: [self-hosted, jomietech]
     steps:
       - name: Checkout
@@ -113,7 +105,7 @@ jobs:
 
       # configure-aws-credentials@v4 — last verified 2026-05-17 (latest v4
       # minor = v4.3.1). v5 + v6 exist upstream but not adopted here; held
-      # in lockstep with FLPC FE/BE deploy-dev. See bootstrap-runner.yml.
+      # in lockstep with FLPC FE/BE deploy-dev.
       - name: Configure AWS credentials (runner instance role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -160,7 +152,6 @@ jobs:
 
   build-android:
     name: Build jomietech-runner-android
-    needs: bootstrap-runner
     runs-on: [self-hosted, jomietech]
     steps:
       - name: Checkout
@@ -168,7 +159,7 @@ jobs:
 
       # configure-aws-credentials@v4 — last verified 2026-05-17 (latest v4
       # minor = v4.3.1). v5 + v6 exist upstream but not adopted here; held
-      # in lockstep with FLPC FE/BE deploy-dev. See bootstrap-runner.yml.
+      # in lockstep with FLPC FE/BE deploy-dev.
       - name: Configure AWS credentials (runner instance role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
